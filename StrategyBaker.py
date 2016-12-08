@@ -201,7 +201,7 @@ class StrategyBaker:
             market_data_all = pd.concat([market_data_all, market_data_[ticker]], axis = 1)
         features_data_all.ffill(inplace = True)
         market_data_all.ffill(inplace = True)
-        
+        self.time_index = features_data_all.index
         for ticker in features_data_.keys(): 
             fcols_needed = map(lambda z: ticker + '_' + str(z), range(0, self.features_shape))
             #print fcols_needed
@@ -228,7 +228,7 @@ class StrategyBaker:
             pnl = self.backtest_(par)
             return -np.mean(pnl) / np.std(pnl) * np.sqrt(252)
         
-        print empirical_risk(self.coef_)
+        #print empirical_risk(self.coef_)
         #mod = basinhopping(func = empirical_risk, T = 0.25, x0 = self.coef_)
         #mod = minimize(fun = empirical_risk, x0 = self.coef_)
 
