@@ -199,6 +199,9 @@ class StrategyBaker:
         for ticker in features_data_.keys()[1:]:
             features_data_all = pd.concat([features_data_all, features_data_[ticker]], axis = 1)
             market_data_all = pd.concat([market_data_all, market_data_[ticker]], axis = 1)
+            
+        if self.hedge is not None:
+            self.hedge = self.hedge.loc[market_data_all.index].ffill().bfill()
         features_data_all.ffill(inplace = True)
         market_data_all.ffill(inplace = True)
         self.time_index = features_data_all.index
@@ -213,7 +216,8 @@ class StrategyBaker:
         return features_data_, market_data_
   
         
-    def fit(self, features_data_train, market_data_train):    
+    def fit(self, features_data_train, market_data_train, hedge = None):
+        self.hedge = hedge
         self.trading_universe = features_data_train.keys()
         self.le = LabelEncoder()
         self.le.fit(self.trading_universe)
@@ -292,7 +296,6 @@ class StrategyBaker:
         #   
         #return pnl
         
-        
     def best_vs_worst_unif(self, alphas_, best_n, worst_m):
         for row in alphas_:
             nonnans = np.count_nonzero(~np.isnan(row))
@@ -309,7 +312,7 @@ class StrategyBaker:
                     row[i] = 0
         return alphas_
 
-    def backtest(self, features_data_test, market_data_test):
+    def backtest(self, features_data_test, market_data_test, test_hedge = None):
         features, market = self.data_prepare_(features_data_test, market_data_test)
         alphas_ = self.alphas_prepare_(self.coef_, features)
         alphas_ = self.portfolio_weighing_strategy(alphas_, **self.portfolio_weighing_strategy_params_)
@@ -317,7 +320,11 @@ class StrategyBaker:
         for ticker in map(int, market.keys()):
             pnls_[:, ticker] = self.symbol_pnl_(alphas_[:, ticker],
                                                            market[str(ticker)][:, 3])
-            
+        
+        if test_hedge is not None:
+            unif_hedge_alphas = np.repeat([-0.5], self.alphas_.shape[0])
+            hedge_pl = self.symbol_pnl_(unif_hedge_alphas, np.array(test_hedge.Close))
+            pnls_ = np.concatenate([pnls_, hedge_pl.reshape((len(hedge_pl), 1))], axis = 1)
         sumpnl = np.nansum(pnls_, axis=1)
         print 'sharpe {}'.format(np.mean(sumpnl) / np.std(sumpnl) * np.sqrt(252))
         return sumpnl
@@ -330,6 +337,11 @@ class StrategyBaker:
         for ticker in map(int, self.market_data_train_.keys()):
             self.train_pnls_[:, ticker] = self.symbol_pnl_(self.alphas_[:, ticker],
                                                            self.market_data_train_[str(ticker)][:, 3])
-            
+        
+        if self.hedge is not None:
+            unif_hedge_alphas = np.repeat([-0.5], self.alphas_.shape[0])
+            hedge_pl = self.symbol_pnl_(unif_hedge_alphas, np.array(self.hedge.Close))
+            self.hedge_pl = hedge_pl
+            self.train_pnls_ = np.concatenate([self.train_pnls_, hedge_pl.reshape((len(hedge_pl), 1))], axis = 1)
         sumpnl = np.nansum(self.train_pnls_, axis=1)
         return sumpnl
