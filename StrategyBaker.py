@@ -200,8 +200,12 @@ class StrategyBaker:
             features_data_all = pd.concat([features_data_all, features_data_[ticker]], axis = 1)
             market_data_all = pd.concat([market_data_all, market_data_[ticker]], axis = 1)
             
-        if self.hedge is not None:
-            self.hedge = self.hedge.loc[market_data_all.index].ffill().bfill()
+        if self.hedge_data is not None and self.hedge_dict is not None:
+            for sym in self.hedge_data.keys():
+                self.hedge_data[sym] = self.hedge_data[sym].loc[market_data_all.index].ffill().bfill()
+        elif self.hedge_data is not None or self.hedge_dict is not None:
+            raise ValueError("if you pass hedge_data you also must pass hedge_dict")
+
         features_data_all.ffill(inplace = True)
         market_data_all.ffill(inplace = True)
         self.time_index = features_data_all.index
@@ -216,8 +220,9 @@ class StrategyBaker:
         return features_data_, market_data_
   
         
-    def fit(self, features_data_train, market_data_train, hedge = None):
-        self.hedge = hedge
+    def fit(self, features_data_train, market_data_train, hedge_data = None, hedge_dict = None):
+        self.hedge_data = hedge_data
+        self.hedge_dict = hedge_dict
         self.trading_universe = features_data_train.keys()
         self.le = LabelEncoder()
         self.le.fit(self.trading_universe)
@@ -283,36 +288,46 @@ class StrategyBaker:
             
         return pnl
         
-        #shares = map(lambda z: round(z, 0), 100000 * weight / price)
-        #shares = np.insert(shares, 0, 0)
-        #pnl = np.zeros(len(price))
-        #for i in range(1, len(pnl)):
-        #    if np.abs(shares[i] - shares[i - 1]) < 50 and (not ((shares[i] == 0 and shares[i - 1] != 0) or (shares[i] != 0 and shares[i - 1] == 0))):
-        #        shares[i] = shares[i - 1]
-        #    #if (not ((shares[i] == 0 and shares[i - 1] != 0) or (shares[i] != 0 and shares[i - 1] == 0))) and i % 5 != 0:
-        #    #    shares[i] = shares[i - 1]
-        #    pnl[i] = shares[i] * (price[i] - price[i-1])
-        #    pnl[i] -= min(1, np.abs(shares[i] - shares[i-1]) * self.commiss_per_share)
-        #   
-        #return pnl
-        
+        '''
+        shares = map(lambda z: round(z, 0), 100000 * weight / price)
+        shares = np.insert(shares, 0, 0)
+        pnl = np.zeros(len(price))
+        for i in range(1, len(pnl)):
+            if np.abs(shares[i] - shares[i - 1]) < 50 and (not ((shares[i] == 0 and shares[i - 1] != 0) or (shares[i] != 0 and shares[i - 1] == 0))):
+                shares[i] = shares[i - 1]
+            pnl[i] = shares[i] * (price[i] - price[i-1])
+            pnl[i] -= min(1, np.abs(shares[i] - shares[i-1]) * self.commiss_per_share)
+           
+        return pnl
+        '''
+
     def best_vs_worst_unif(self, alphas_, best_n, worst_m):
-        for row in alphas_:
+        need_hedge = self.hedge_data is not None
+        if need_hedge:
+            self.hedge_weights = defaultdict()
+            for sym in self.hedge_data.keys():
+                self.hedge_weights[sym] = np.zeros(alphas_.shape[0])
+
+        for row_num, row in enumerate(alphas_):
             nonnans = np.count_nonzero(~np.isnan(row))
             if  nonnans < best_n + worst_m:
-                raise ValueError("not NA columns less then best_n + worst_m ")
+                raise ValueError("not NA columns less then best_n + worst_m")
 
             row[np.isnan(row)] = np.inf
             for i, order in zip(range(0, len(row)), row.argsort().argsort()):
                 if order < worst_m:
                     row[i] = -0.5 / worst_m
+
                 elif order >= nonnans - best_n and order < nonnans:
                     row[i] = 0.5 / best_n
+                    if need_hedge:
+                        self.hedge_weights[self.hedge_dict[self.le.inverse_transform(i)]][row_num] += -0.5 / best_n
                 else:
                     row[i] = 0
         return alphas_
 
     def backtest(self, features_data_test, market_data_test, test_hedge = None):
+        raise ValueError('FUNCTION WILL BE DEVELOPED IN FUTURE')
         features, market = self.data_prepare_(features_data_test, market_data_test)
         alphas_ = self.alphas_prepare_(self.coef_, features)
         alphas_ = self.portfolio_weighing_strategy(alphas_, **self.portfolio_weighing_strategy_params_)
@@ -322,8 +337,7 @@ class StrategyBaker:
                                                            market[str(ticker)][:, 3])
         
         if test_hedge is not None:
-            unif_hedge_alphas = np.repeat([-0.5], self.alphas_.shape[0])
-            hedge_pl = self.symbol_pnl_(unif_hedge_alphas, np.array(test_hedge.Close))
+            hedge_pl = self.symbol_pnl_(self.hedge_weights, np.array(test_hedge.Close))
             pnls_ = np.concatenate([pnls_, hedge_pl.reshape((len(hedge_pl), 1))], axis = 1)
         sumpnl = np.nansum(pnls_, axis=1)
         print 'sharpe {}'.format(np.mean(sumpnl) / np.std(sumpnl) * np.sqrt(252))
@@ -338,10 +352,10 @@ class StrategyBaker:
             self.train_pnls_[:, ticker] = self.symbol_pnl_(self.alphas_[:, ticker],
                                                            self.market_data_train_[str(ticker)][:, 3])
         
-        if self.hedge is not None:
-            unif_hedge_alphas = np.repeat([-0.5], self.alphas_.shape[0])
-            hedge_pl = self.symbol_pnl_(unif_hedge_alphas, np.array(self.hedge.Close))
-            self.hedge_pl = hedge_pl
-            self.train_pnls_ = np.concatenate([self.train_pnls_, hedge_pl.reshape((len(hedge_pl), 1))], axis = 1)
+        if self.hedge_data is not None:
+            for sym in self.hedge_data.keys():
+                hedge_pl = self.symbol_pnl_(self.hedge_weights[sym], np.array(self.hedge_data[sym].Close))
+                self.hedge_pl = hedge_pl
+                self.train_pnls_ = np.concatenate([self.train_pnls_, hedge_pl.reshape((len(hedge_pl), 1))], axis = 1)
         sumpnl = np.nansum(self.train_pnls_, axis=1)
         return sumpnl
